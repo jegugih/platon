@@ -44,9 +44,14 @@ class CombinedRetriever:
                 unit = "R_jup"
             if name == "T":
                 unit = "K"
+            if name == "mmw":
+                unit = "amu"
+            if name == "inv_mmw":
+                unit = "/amu"
 
             if name == "T":
                 format_str = "{:4.0f}"                
+            elif name == "inv_mmw": format_str = "{:.4f}"
             elif abs(value) < 1e4: format_str = "{:.2f}"
             else: format_str = "{:.2e}"
 
@@ -98,6 +103,38 @@ class CombinedRetriever:
                     10**fit_info._get("log_cloudtop_P"))
 
     @staticmethod
+    def _validate_mmw_params(fit_info):
+        def best_guess(name):
+            return fit_info.all_params[name].best_guess if name in fit_info.all_params else None
+
+        mmw, inv_mmw = best_guess("mmw"), best_guess("inv_mmw")
+        if mmw is not None and inv_mmw is not None:
+            raise ValueError("Set or fit either mmw or inv_mmw, not both")
+        if (mmw is not None or inv_mmw is not None) and \
+           not (best_guess("fit_vmr") or best_guess("fit_clr")):
+            raise ValueError("mmw and inv_mmw can only be used in free retrievals (fit_vmr or fit_clr)")
+        if getattr(fit_info, "gas_remainder", False) and mmw is None and inv_mmw is None:
+            raise ValueError("A remainder gas needs the mean molecular weight: set or fit mmw or inv_mmw")
+        for name in ["mmw", "inv_mmw"]:
+            if name in fit_info.fit_param_names and \
+               isinstance(fit_info.all_params[name], _UniformParam) and \
+               fit_info.all_params[name].low_lim < 0:
+                raise ValueError("The prior on {} must not include negative values".format(name))
+
+    @staticmethod
+    def get_remainder(gases, vmrs, mmw, mass_data):
+        '''For a free retrieval with a remainder gas: returns the VMR and the
+        molecular weight (in amu) of the unretrieved remainder gas, given the
+        VMRs of `gases` and the mean molecular weight `mmw`.  `mass_data` maps
+        species to molecular weights, e.g. calculator.atm.mass_data.  The
+        weight is nan if the VMRs do not leave any room for a remainder.'''
+        remainder_vmr = 1 - np.sum(vmrs)
+        if remainder_vmr <= 0:
+            return remainder_vmr, np.nan
+        retrieved_weight = np.sum([vmr * mass_data[g] for g, vmr in zip(gases, vmrs)])
+        return remainder_vmr, (mmw - retrieved_weight) / remainder_vmr
+
+    @staticmethod
     def convert_clr_to_vmr(clrs):
         clr_bkg = -np.sum(clrs)
         clrs_with_bkg = np.append(clrs, clr_bkg)
@@ -136,21 +173,44 @@ class CombinedRetriever:
         P_quench = 10.** params_dict["log_P_quench"]
         CH4_mult = 10.**params_dict["log_CH4_mult"]
 
+        # Mean molecular weight set independently of the abundances
+        mmw = params_dict.get("mmw")
+        if params_dict.get("inv_mmw") is not None:
+            if params_dict["inv_mmw"] <= 0: return -np.inf
+            mmw = 1.0 / params_dict["inv_mmw"]
+        if mmw is not None and mmw <= 0: return -np.inf
+
+        # With a remainder gas, every listed gas is fitted and the VMRs need
+        # not sum to 1; otherwise the last gas fills the rest
+        remainder = getattr(fit_info, "gas_remainder", False)
         if params_dict["fit_vmr"]:
             assert(logZ is None and CO_ratio is None)
             gases = fit_info.gases
-            vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:-1]]
-            vmrs.append(1 - np.sum(vmrs))
-            if vmrs[-1] < 0: return -np.inf
+            if remainder:
+                vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases]
+            else:
+                vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:-1]]
+                vmrs.append(1 - np.sum(vmrs))
+                if vmrs[-1] < 0: return -np.inf
         elif params_dict["fit_clr"]:
             assert(logZ is None and CO_ratio is None)
             gases = fit_info.gases
-            clrs = [params_dict[f'clr_{gas}'] for gas in gases[:-1]]
+            clrs = [params_dict[f'clr_{gas}'] for gas in (gases if remainder else gases[:-1])]
             vmrs = self.convert_clr_to_vmr(clrs)
             if np.min(vmrs) < fit_info.clr_low_lim: return -np.inf
+            if remainder:
+                # The last CLR component is the remainder gas
+                vmrs = vmrs[:-1]
         else:
             vmrs = None
             gases = None
+
+        if remainder:
+            calc = transit_calc if transit_calc is not None else eclipse_calc
+            remainder_vmr, remainder_mmw = self.get_remainder(
+                gases, vmrs, mmw, calc.atm.mass_data)
+            if not remainder_vmr > 0 or not remainder_mmw >= 0:
+                return -np.inf
         if "n" in params_dict and params_dict["n"] is not None and "log_k" in params_dict:
             ri = params_dict["n"] - 1j * 10**params_dict["log_k"]
         else:
@@ -177,7 +237,8 @@ class CombinedRetriever:
                     cloudtop_pressure=cloudtop_P, T_star=T_star,
                     T_spot=T_spot, spot_cov_frac=spot_cov_frac,
                     frac_scale_height=frac_scale_height, number_density=number_density,
-                    part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
+                    part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities,
+                    mmw=mmw)
 
                 calculated_transit_depths[params_dict["offset_start"] : params_dict["offset_end"]] += params_dict["offset_transit"]
                 residuals = calculated_transit_depths - measured_transit_depths
@@ -198,7 +259,8 @@ class CombinedRetriever:
                     cloudtop_pressure=cloudtop_P,
                     T_spot=T_spot, spot_cov_frac=spot_cov_frac,
                     frac_scale_height=frac_scale_height, number_density=number_density,
-                    part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities)
+                    part_size = part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities,
+                    mmw=mmw)
                 calculated_eclipse_depths[params_dict["offset_start"] : params_dict["offset_end"]] += params_dict["offset_eclipse"]
                 residuals = calculated_eclipse_depths - measured_eclipse_depths
                 scaled_errors = error_multiple * measured_eclipse_errors
@@ -211,6 +273,11 @@ class CombinedRetriever:
         self.last_lnprob = fit_info._ln_prior(params) + ln_likelihood.sum()
         
         if ret_best_fit:
+            if remainder:
+                for info_dict in (transit_info_dict, eclipse_info_dict):
+                    if info_dict is not None:
+                        info_dict["remainder_vmr"] = remainder_vmr
+                        info_dict["remainder_mmw"] = remainder_mmw
             return calculated_transit_depths, transit_info_dict, calculated_eclipse_depths, eclipse_info_dict
 
         if lnlike_per_point:
@@ -288,14 +355,19 @@ class CombinedRetriever:
         transit_calc = None
         eclipse_calc = None
 
+        self._validate_mmw_params(fit_info)
+        # Both calculators are created before either is rebinned, so that
+        # they share the full opacity data while loading
         if transit_bins is not None:
             transit_calc = TransitDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
-            transit_calc.change_wavelength_bins(transit_bins)
-            self._validate_params(fit_info, transit_calc)
         if eclipse_bins is not None:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
+        if transit_bins is not None:
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+        if eclipse_bins is not None:
             eclipse_calc.change_wavelength_bins(eclipse_bins)       
 
         sampler = emcee.EnsembleSampler(
@@ -435,14 +507,19 @@ class CombinedRetriever:
         self.params_to_lnlike = {}
         transit_calc = None
         eclipse_calc = None
+        self._validate_mmw_params(fit_info)
+        # Both calculators are created before either is rebinned, so that
+        # they share the full opacity data while loading
         if transit_bins is not None:
             transit_calc = TransitDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
-            transit_calc.change_wavelength_bins(transit_bins)
-            self._validate_params(fit_info, transit_calc)
         if eclipse_bins is not None:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
+        if transit_bins is not None:
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+        if eclipse_bins is not None:
             eclipse_calc.change_wavelength_bins(eclipse_bins)
 
         def transform_prior(cube):
@@ -534,14 +611,19 @@ class CombinedRetriever:
         self.params_to_lnlike = {}
         transit_calc = None
         eclipse_calc = None
+        self._validate_mmw_params(fit_info)
+        # Both calculators are created before either is rebinned, so that
+        # they share the full opacity data while loading
         if transit_bins is not None:
             transit_calc = TransitDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
-            transit_calc.change_wavelength_bins(transit_bins)
-            self._validate_params(fit_info, transit_calc)
         if eclipse_bins is not None:
             eclipse_calc = EclipseDepthCalculator(
                 include_condensation=include_condensation, method=rad_method)
+        if transit_bins is not None:
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+        if eclipse_bins is not None:
             eclipse_calc.change_wavelength_bins(eclipse_bins)
 
         def transform_prior(cube):
@@ -635,6 +717,7 @@ class CombinedRetriever:
                              log_P_quench=-99,
                              offset_transit=0, offset_eclipse=0, offset_start=0, offset_end=sys.maxsize,
                              fit_vmr=False, fit_clr=False,
+                             mmw=None, inv_mmw=None,
                              profile_type = 'isothermal', **profile_kwargs):
         '''Get a :class:`.FitInfo` object filled with best guess values.  A few
         parameters are required, but others can be set to default values if you
@@ -655,6 +738,18 @@ class CombinedRetriever:
             A positive offset means the observed transit depths are decreased before comparing to the model.
         offset_eclipse : float
             Same as above, but for eclipse depths.
+        mmw : float
+            Mean molecular weight of the atmosphere, in amu.  If not None, it
+            is used instead of the mean molecular weight implied by the
+            abundances, which still set the opacities.  Only for free
+            retrievals (fit_vmr or fit_clr).  To retrieve it, also call
+            fit_info.add_uniform_fit_param("mmw", ...).  If the gases were
+            added with remainder=True, it also determines the molecular
+            weight of the unretrieved remainder gas.
+        inv_mmw : float
+            1/mmw, to set or retrieve the inverse of the mean molecular weight
+            instead (a uniform prior on it is uniform in scale height).  At
+            most one of mmw and inv_mmw can be set.
         profile_type : string
             "isothermal", "parametric" (Madhusudhan & Seager 2009) or 
             "radiative_solution" (Line et al 2013) T/P profile 

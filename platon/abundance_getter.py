@@ -1,9 +1,12 @@
-from . import _cupy_numpy as xp
 from io import open
 import configparser
 from pathlib import Path
 
+import numpy as np
+
+from . import _mlx
 from ._interpolator_3D import regular_grid_interp
+from ._loader import get_shared
 
 class AbundanceGetter:
     def __init__(self, include_condensation=True):
@@ -12,10 +15,10 @@ class AbundanceGetter:
         config.read(basedir / "data/abundances/properties.cfg")
         properties = config["DEFAULT"]
         self.min_temperature = float(properties["min_temperature"])
-        self.logZs = xp.linspace(float(properties["min_logZ"]),
+        self.logZs = np.linspace(float(properties["min_logZ"]),
                                  float(properties["max_logZ"]),
                                  int(properties["num_logZ"]))
-        self.CO_ratios = xp.array(eval(properties["CO_ratios"]))
+        self.CO_ratios = np.array(eval(properties["CO_ratios"]))
         self.included_species = eval(properties["included_species"])
 
         if include_condensation:
@@ -25,8 +28,25 @@ class AbundanceGetter:
 
         abundances_path = "data/abundances/{}".format(filename)
 
-        self.log_abundances = xp.log10(xp.load(basedir / abundances_path))
-                 
+        # log10 is taken in float64 before converting, so tiny abundances
+        # survive float32.  Zero abundances become -inf, as before.  The grid
+        # is shared by all calculators.
+        def load():
+            with np.errstate(divide="ignore"):
+                return _mlx.asarray(np.log10(np.load(basedir / abundances_path)))
+        self._log_abundances_holder = get_shared(
+            ("log_abundances", filename, str(_mlx.dtype())), load)
+        self.log_abundances = self._log_abundances_holder.value
+
+    def get_log(self, logZ, CO_ratio=0.53):
+        '''Like `get`, but returns log10 abundances as one MLX array of
+        shape (species, temperatures, pressures), ordered as
+        self.included_species.  Used internally to avoid float32 underflow.'''
+        # Targets are rounded to float32, as they always have been
+        return regular_grid_interp(self.logZs, self.CO_ratios,
+                                   self.log_abundances,
+                                   float(np.float32(logZ)),
+                                   float(np.float32(CO_ratio)))
         
     def get(self, logZ, CO_ratio=0.53):
         '''Get an abundance grid at the specified logZ and C/O ratio.  This
@@ -36,15 +56,15 @@ class AbundanceGetter:
 
         Returns
         -------
-        abundances : dict of xp.ndarray
+        abundances : dict of np.ndarray
             A dictionary mapping species name to a 2D abundance array, specifying
             the number fraction of the species at a certain temperature and
             pressure.'''
-        interp_log_abund = 10**regular_grid_interp(self.logZs, self.CO_ratios, self.log_abundances, xp.float32(logZ), xp.float32(CO_ratio))
+        log_abund = _mlx.to_numpy(self.get_log(logZ, CO_ratio))
 
         abund_dict = {}
         for i, s in enumerate(self.included_species):
-            abund_dict[s] = interp_log_abund[i]
+            abund_dict[s] = 10**log_abund[i]
 
         return abund_dict
 
@@ -81,19 +101,19 @@ class AbundanceGetter:
                     assert(elements[1] == 'P')
                     species = elements[2:]
                 elif len(elements) > 1:
-                    elements = xp.array([float(e) for e in elements])
+                    elements = np.array([float(e) for e in elements])
                     temperatures.append(elements[0])
                     pressures.append(elements[1])
                     compositions.append(elements[2:])
 
                 line_counter += 1
 
-        temperatures = xp.array(temperatures)
-        pressures = xp.array(pressures)
-        compositions = xp.array(compositions)
+        temperatures = np.array(temperatures)
+        pressures = np.array(pressures)
+        compositions = np.array(compositions)
 
-        N_temperatures = len(xp.unique(temperatures))
-        N_pressures = len(xp.unique(pressures))
+        N_temperatures = len(np.unique(temperatures))
+        N_pressures = len(np.unique(pressures))
 
         for i in range(len(species)):
             c = compositions[:, i].reshape((N_pressures, N_temperatures)).T

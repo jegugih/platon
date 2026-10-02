@@ -6,6 +6,7 @@ class FitInfo:
     def __init__(self, guesses_dict):
         self.fit_param_names = []
         self.all_params = dict()
+        self.gas_remainder = False
 
         for key in guesses_dict:
             self.all_params[key] = _Param(guesses_dict[key])
@@ -51,20 +52,44 @@ class FitInfo:
         self.all_params[name] = _GaussianParam(
             mean, std, low_guess, high_guess)
 
-    def add_gases_clr(self, gases, low_lim=1e-12):
+    def add_gases_clr(self, gases, low_lim=1e-12, remainder=False):
+        '''Fit for the centered log-ratios (CLRs) of the abundances of
+        `gases`, for a free retrieval with fit_clr=True.  The CLR of the
+        last gas is minus the sum of the others.
+
+        If `remainder` is True, the CLRs of all of `gases` are fitted, and an
+        unretrieved remainder gas takes the place of the last CLR component.
+        See `add_gases_vmr` for what this requires.'''
         self.gases = gases
         self.clr_low_lim = low_lim
+        self.gas_remainder = remainder
+        fitted = gases if remainder else gases[:-1]
         ln_limit = np.log(np.min(low_lim))
-        n = len(gases)
+        n = len(fitted) + 1
         clr_min =  (n-1)/n * (ln_limit + np.log(n-1))
         clr_max = -(n-1)/n * ln_limit
-        for g in gases[:-1]:
+        for g in fitted:
             self.all_params[f'clr_{g}'] = _Param(0)
             self.add_uniform_fit_param(f'clr_{g}', clr_min, clr_max)
 
-    def add_gases_vmr(self, gases, low_lim, high_lim):
+    def add_gases_vmr(self, gases, low_lim, high_lim, remainder=False):
+        '''Fit for the log10 volume mixing ratios (VMRs) of `gases`, with
+        uniform priors between log10(low_lim) and log10(high_lim), for a free
+        retrieval with fit_vmr=True.  The last gas is the background gas: it
+        is not fitted, and its VMR is 1 minus the sum of the others.
+
+        If `remainder` is True, the VMRs of all of `gases` are fitted, and
+        they need not sum to 1.  The rest of the atmosphere is an unretrieved
+        remainder gas, with no opacity, whose molecular weight follows from
+        the mean molecular weight.  The mean molecular weight must therefore
+        be set or fitted, as either "mmw" or "inv_mmw" (see
+        CombinedRetriever.get_default_fit_info).  Samples where the VMRs sum
+        to 1 or more, or where the remainder gas would have a negative
+        molecular weight, are rejected.'''
         self.gases = gases
-        for g in gases[:-1]:
+        self.gas_remainder = remainder
+        fitted = gases if remainder else gases[:-1]
+        for g in fitted:
             self.all_params[f'log_{g}'] = _Param(np.log10(low_lim))
             self.add_uniform_fit_param(f'log_{g}', np.log10(low_lim), np.log10(high_lim))
         

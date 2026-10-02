@@ -1,11 +1,18 @@
-from . import _cupy_numpy as xp
+import math
+
+import mlx.core as mx
+
+from . import _mlx
+
 
 def _hist_bin_fd(x):
-    iqr = xp.percentile(x, 75) - xp.percentile(x, 25)
+    iqr = (_mlx.percentile(x, 75) - _mlx.percentile(x, 25)).item()
     return 2 * iqr * x.size**(-1./3)
 
+
 def _hist_bin_sturges(x):
-    return (x.max() - x.min()) / (xp.log2(x.size) + 1.)
+    return (mx.max(x).item() - mx.min(x).item()) / (math.log2(x.size) + 1.)
+
 
 def _hist_bin_auto(x):
     fd_bw = _hist_bin_fd(x)
@@ -16,7 +23,8 @@ def _hist_bin_auto(x):
     else:
         return sturges_bw
 
+
 def get_num_bins(x):
     width = _hist_bin_auto(x)
-    n = int(xp.ceil((x.max() - x.min()) / width))
+    n = int(math.ceil((mx.max(x).item() - mx.min(x).item()) / width))
     return n

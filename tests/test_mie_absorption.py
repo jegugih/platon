@@ -1,9 +1,8 @@
 import unittest
 import numpy as np
 import scipy.integrate
-from nose.tools import nottest
 import matplotlib.pyplot as plt
-from platon import _cupy_numpy as xp
+from platon._mlx import to_numpy
 
 from platon import _mie_multi_x
 from platon.transit_depth_calculator import TransitDepthCalculator
@@ -31,7 +30,6 @@ class TestMieAbsorption(unittest.TestCase):
         result, error = scipy.integrate.quad(integrand, -5, 5, epsrel=1e-3, epsabs=0, limit=100)
         return result
 
-    @nottest
     def run_test(self, m, r_mean, sigma, frac_scale_height=2, rtol=1e-5, atol=1e-5):
         n_0 = 2.3e9
         calc = self.calc #TransitDepthCalculator()
@@ -45,7 +43,7 @@ class TestMieAbsorption(unittest.TestCase):
         # This technically gets us absorption cross sections, but for n_0=1 and
         # a single pressure in the list, this should equal cross section
         P_cond = calc.atm.P_grid <= 1e5
-        absorption = xp.cpu(calc.atm._get_mie_scattering_absorption(
+        absorption = to_numpy(calc.atm._get_mie_scattering_absorption(
             P_cond, calc.atm.T_grid == 800, m, r_mean,
             frac_scale_height, n_0, sigma=sigma))
 
@@ -56,7 +54,7 @@ class TestMieAbsorption(unittest.TestCase):
         self.assertTrue(np.max(frac_dev) < 0.01)
 
         for i in range(absorption.shape[1]):
-            P_grid = xp.cpu(calc.atm.P_grid[P_cond])
+            P_grid = calc.atm.P_grid[P_cond]
             P = P_grid[i]
             ref_P = np.max(P_grid)
             ratio = (P/ref_P)**(1.0/frac_scale_height)

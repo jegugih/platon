@@ -108,6 +108,24 @@ centered-log-ratio (CLR) priors::
 
 With a CLR prior, all gases are treated equally, and there is no pre-defined background gas.
 
+In a free retrieval, the mean molecular weight can also be set or retrieved
+independently of the abundances, which then only set the opacities.  Pass
+either mmw (in amu) or inv_mmw (its inverse; a uniform prior on it is uniform
+in scale height) to get_default_fit_info, and fit for it like any other
+parameter::
+
+  fit_info = CombinedRetriever.get_default_fit_info(..., logZ=None, CO_ratio=None,
+                                                    fit_vmr=True, inv_mmw=1/2.3)
+  fit_info.add_uniform_fit_param("inv_mmw", 1/20, 1/2)
+  fit_info.add_gases_vmr(["CH4", "CO2", "CO", "H2O", "H2S"], 10**-12, 10**-1, remainder=True)
+
+With remainder=True, every listed gas is fitted, and their VMRs need not sum
+to 1: the rest of the atmosphere is an unretrieved gas, with no opacity, whose
+molecular weight is inferred from the mean molecular weight.  Samples where
+the VMRs sum to 1 or more, or where that weight would be negative, are
+rejected.  add_gases_clr takes the same option.  The forward models accept the
+mean molecular weight directly, as compute_depths(..., mmw=2.3).
+
 Once you get the `result` object, you should store the object, in addition
 to plotting the posterior distribution and the best fit::
 

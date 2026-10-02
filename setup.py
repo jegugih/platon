@@ -24,6 +24,7 @@ setuptools.setup(
     install_requires = [
         "numpy",
         "scipy",
+        "mlx",
         "emcee", "dynesty", "corner",
         "future", "nose", "setuptools", "configparser",
         "matplotlib"]

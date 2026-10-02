@@ -28,6 +28,34 @@ to Michael Zhang: zmzhang "at" uchicago.edu
 To find installation instructions and quickstart examples, read the
 documentation at: https://platon.readthedocs.io
 
+## MLX backend
+
+On this branch the forward model runs on [MLX](https://github.com/ml-explore/mlx)
+instead of NumPy/CuPy.  It has been tested on Apple silicon GPUs only, not on
+MLX's CUDA backend.  The public API is unchanged and still returns NumPy
+arrays.
+
+Metal GPUs have no float64, so spectra are computed in float32 by default.
+Densities, cross sections and abundances are rescaled or kept in log space so
+that nothing under- or overflows, and the hydrostatic radii, ray path lengths
+and T/P profiles are always computed in float64.  Against the float64 NumPy code,
+transit and eclipse depths typically agree to 0.01 ppm or better.  The largest
+difference seen was 0.13 ppm, at a single wavelength of a rocky planet's
+eclipse spectrum, where two layers were almost equally good choices for the
+photosphere.
+
+To run everything in float64 on the CPU instead (e.g. for validation), call
+this before creating a calculator:
+
+    import platon
+    platon.set_precision("float64")
+
+Mie efficiencies (`_mie_multi_x.py`) are still computed in NumPy and cached,
+and the hydrostatic solution and T/P profiles are computed in NumPy because
+they involve only ~100 numbers, for which MLX's fixed cost per operation would
+dominate.  Everything else that runs per model evaluation is in MLX.
+Calculators in the same process share their opacity data.
+
 *Now, these points of data  
 make a beautiful line  
 And we're out of beta  
