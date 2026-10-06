@@ -125,8 +125,32 @@ class TestRetrieveMeanMolecularWeight(unittest.TestCase):
         fit_info.all_params["mmw"].best_guess = 10
         self.assertEqual(self.ln_like(fit_info, Rp=R_jup, clr_H2O=0, clr_CO2=0), -np.inf)
 
+    def test_two_fillers(self):
+        fit_info = self.fit_info()
+        fit_info.add_gases_vmr(["H2O", "CO2", "H2", "He"], 1e-12, 1, num_fillers=2)
+        self.assertEqual(fit_info.fit_param_names, ["Rp", "log_H2O", "log_CO2", "H2_He_fraction"])
+
+        # H2 and He split the 1 - 0.011 left by H2O and CO2
+        params = np.array([R_jup, -2, -3, 0.3])
+        _, info, _, _ = CombinedRetriever()._ln_like(params, self.calc, None, fit_info, self.depths,
+                                                     self.errors, None, None, ret_best_fit=True)
+        abundances = info["atm_abundances"]
+        np.testing.assert_allclose(np.asarray(abundances["H2"]), 0.3 * 0.989, rtol=1e-5)
+        np.testing.assert_allclose(np.asarray(abundances["He"]), 0.7 * 0.989, rtol=1e-5)
+        self.assertNotEqual(self.ln_like(fit_info, Rp=R_jup, log_H2O=-2, log_CO2=-3, H2_He_fraction=0.3),
+                            self.ln_like(fit_info, Rp=R_jup, log_H2O=-2, log_CO2=-3, H2_He_fraction=0.9))
+        # VMRs add up to more than 1
+        self.assertEqual(self.ln_like(fit_info, Rp=R_jup, log_H2O=np.log10(0.6),
+                                      log_CO2=np.log10(0.5), H2_He_fraction=0.5), -np.inf)
+
+        with self.assertRaises(ValueError):
+            self.fit_info(mmw=2.3).add_gases_vmr(["H2O", "H2", "He"], 1e-12, 1,
+                                                 remainder=True, num_fillers=2)
+        with self.assertRaises(ValueError):
+            self.fit_info().add_gases_vmr(["H2O", "H2", "He"], 1e-12, 1, num_fillers=3)
+
     def test_validation(self):
-        both = self.fit_info(mmw=2.3, inv_mmw=1 / 2.3)
+        both =self.fit_info(mmw=2.3, inv_mmw=1 / 2.3)
         equilibrium = CombinedRetriever.get_default_fit_info(Rs=R_sun, Mp=M_jup, Rp=R_jup, T=1200, mmw=2.3)
         no_mmw = self.fit_info()
         no_mmw.add_gases_vmr(["H2O", "CO2"], 1e-12, 1e-1, remainder=True)

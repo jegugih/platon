@@ -72,11 +72,17 @@ class FitInfo:
             self.all_params[f'clr_{g}'] = _Param(0)
             self.add_uniform_fit_param(f'clr_{g}', clr_min, clr_max)
 
-    def add_gases_vmr(self, gases, low_lim, high_lim, remainder=False):
+    def add_gases_vmr(self, gases, low_lim, high_lim, remainder=False, num_fillers=1):
         '''Fit for the log10 volume mixing ratios (VMRs) of `gases`, with
         uniform priors between log10(low_lim) and log10(high_lim), for a free
         retrieval with fit_vmr=True.  The last gas is the background gas: it
         is not fitted, and its VMR is 1 minus the sum of the others.
+
+        If `num_fillers` is 2, the last two gases (e.g. H2 and He) share the
+        background: together they have 1 minus the sum of the other VMRs, and
+        the fraction of that which is the first of them, VMR1 / (VMR1 + VMR2),
+        is fitted with a uniform prior between 0 and 1 as the parameter
+        "<gas1>_<gas2>_fraction".
 
         If `remainder` is True, the VMRs of all of `gases` are fitted, and
         they need not sum to 1.  The rest of the atmosphere is an unretrieved
@@ -86,12 +92,21 @@ class FitInfo:
         CombinedRetriever.get_default_fit_info).  Samples where the VMRs sum
         to 1 or more, or where the remainder gas would have a negative
         molecular weight, are rejected.'''
+        if num_fillers not in (1, 2):
+            raise ValueError("num_fillers must be 1 or 2")
+        if remainder and num_fillers != 1:
+            raise ValueError("A remainder gas cannot be combined with two filler gases")
         self.gases = gases
         self.gas_remainder = remainder
-        fitted = gases if remainder else gases[:-1]
+        self.num_fillers = 0 if remainder else num_fillers
+        fitted = gases[:len(gases) - self.num_fillers]
         for g in fitted:
             self.all_params[f'log_{g}'] = _Param(np.log10(low_lim))
             self.add_uniform_fit_param(f'log_{g}', np.log10(low_lim), np.log10(high_lim))
+        if num_fillers == 2:
+            self.filler_fraction_name = "{}_{}_fraction".format(*gases[-2:])
+            self.all_params[self.filler_fraction_name] = _Param(0.5)
+            self.add_uniform_fit_param(self.filler_fraction_name, 0, 1)
         
     def _interpret_param_array(self, array):
         if len(array) != len(self.fit_param_names):

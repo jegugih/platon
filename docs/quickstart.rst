@@ -101,7 +101,14 @@ To do a free retrieval, set logZ=None, CO_ratio=None, and fit_vmr=True in get_de
 
 This fits the log VMR of the gases CH4, CO2, CO, H2O, and H2S, with a H2/He mixture
 as the background gas.  The VMRs of the non-background gases are given log-uniform
-priors between 1e-12 and 1e-2.  Alternatively, you can do a free retrieval with
+priors between 1e-12 and 1e-2.  To retrieve the composition of the background
+too, it can be split between two gases::
+
+  fit_info.add_gases_vmr(["CH4", "CO2", "CO", "H2O", "H2S", "H2", "He"], 10**-12, 10**-2, num_fillers=2)
+
+H2 and He then fill the rest of the atmosphere together, and the fraction of
+it that is H2, VMR(H2) / (VMR(H2) + VMR(He)), is fitted as H2_He_fraction with
+a uniform prior between 0 and 1.  Alternatively, you can do a free retrieval with
 centered-log-ratio (CLR) priors::
 
   fit_info.add_gases_clr(["CH4", "CO2", "CO", "H2O", "H2S"])

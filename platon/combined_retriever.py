@@ -181,17 +181,21 @@ class CombinedRetriever:
         if mmw is not None and mmw <= 0: return -np.inf
 
         # With a remainder gas, every listed gas is fitted and the VMRs need
-        # not sum to 1; otherwise the last gas fills the rest
+        # not sum to 1; otherwise the last gas (or last two) fills the rest
         remainder = getattr(fit_info, "gas_remainder", False)
         if params_dict["fit_vmr"]:
             assert(logZ is None and CO_ratio is None)
             gases = fit_info.gases
-            if remainder:
-                vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases]
-            else:
-                vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:-1]]
-                vmrs.append(1 - np.sum(vmrs))
-                if vmrs[-1] < 0: return -np.inf
+            num_fillers = 0 if remainder else getattr(fit_info, "num_fillers", 1)
+            vmrs = [10.**params_dict[f'log_{gas}'] for gas in gases[:len(gases) - num_fillers]]
+            if num_fillers > 0:
+                filler_vmr = 1 - np.sum(vmrs)
+                if filler_vmr < 0: return -np.inf
+                if num_fillers == 1:
+                    vmrs.append(filler_vmr)
+                else:
+                    fraction = params_dict[fit_info.filler_fraction_name]
+                    vmrs += [fraction * filler_vmr, (1 - fraction) * filler_vmr]
         elif params_dict["fit_clr"]:
             assert(logZ is None and CO_ratio is None)
             gases = fit_info.gases
