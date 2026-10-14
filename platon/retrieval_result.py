@@ -39,7 +39,8 @@ class RetrievalResult:
         self.__dict__.update(results)
 
         if "logz" in results:
-            self.final_logz = results["logz"][-1]
+            # An array for dynesty, a single value for nautilus
+            self.final_logz = np.ravel(results["logz"])[-1]
 
         self.divisors = divisors
         self.labels = labels

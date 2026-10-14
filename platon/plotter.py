@@ -29,7 +29,7 @@ class Plotter():
         if retrieval_result.retrieval_type == "dynesty":
             equal_samples = dynesty.utils.resample_equal(retrieval_result.samples, retrieval_result.weights)
             np.random.shuffle(equal_samples)
-        elif retrieval_result.retrieval_type == "pymultinest":
+        elif retrieval_result.retrieval_type in ["pymultinest", "nautilus"]:
             equal_samples = retrieval_result.equal_samples
         elif retrieval_result.retrieval_type == "emcee":
             equal_samples = np.copy(retrieval_result.flatchain)
@@ -81,7 +81,7 @@ class Plotter():
                                 range=[0.99] * retrieval_result.samples.shape[1],
                                 show_titles=True,
                                 labels=retrieval_result.fit_info.fit_param_names, **args)
-        elif retrieval_result.retrieval_type == "pymultinest":
+        elif retrieval_result.retrieval_type in ["pymultinest", "nautilus"]:
             fig = corner.corner(retrieval_result.equal_samples,
                                 range=[0.99] * retrieval_result.equal_samples.shape[1],
                                 show_titles=True,

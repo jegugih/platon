@@ -36,3 +36,40 @@ In surface_example.py, set Psurf to a negligible value, set the atmospheric temp
   p.set_isothermal(surface_temp)
 
 This is way overkill because the first and third steps alone should be enough to simulate an airless body, but better safe than sorry. 
+
+Heat redistribution: the four-box model of Wirth et al.
+--------------------------------------------------------
+
+For tidally locked rocky planets, platon.wirth_model implements the four-box
+model of `Wirth, Powell & Wordsworth (2026) <https://arxiv.org/abs/2601.12556>`_,
+which gives the mean dayside and nightside temperatures of the surface and of
+an optically thin atmosphere.  Unlike scalings based on the weak temperature
+gradient approximation, it also applies to rapidly rotating planets.  The
+grey infrared opacity and the mean molecular weight come from PLATON's
+opacities and chemistry::
+
+  from platon.wirth_model import WirthModel
+  model = WirthModel()
+  result = model.compute(Rs, T_star, semi_major_axis, Mp, Rp, Psurf,
+                         logZ=None, CO_ratio=None, gases=["CO2"], vmrs=[1.0],
+                         alpha="rotating", rotation_period=period, cp_over_R=4.5)
+
+alpha, the day-to-night flow speed over the sound speed, can be a number
+(the paper explores 0.05-1), "wtg" for slowly rotating planets, or
+"rotating" for the Coriolis-dominated regime.  The result holds the four
+temperatures (T_surface_day, T_atm_day, T_atm_night, T_surface_night),
+brightness temperatures, and tau, the infrared optical depth; the model is
+only valid for tau < 1.
+
+The grey opacity is chosen so that the column absorbs the same fraction of
+the surface's thermal emission as with the full opacities.  The paper
+defines it as the Planck mean (method="planck" in grey_opacity), but for
+line absorbers such as CO2 that is orders of magnitude larger and makes any
+atmosphere optically thick.
+
+To compute an eclipse spectrum, pass the dayside surface temperature as
+surface_temp, with an isothermal atmosphere at T_atm_day::
+
+  p.set_isothermal(result["T_atm_day"])
+  wavelengths, depths, info_dict = calc.compute_depths(p, Rs, Mp, Rp, T_star, ..., surface_pressure=Psurf,
+      surface_type=surface_type, semimajor_axis=semi_major_axis, surface_temp=result["T_surface_day"])

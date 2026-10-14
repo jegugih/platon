@@ -88,6 +88,8 @@ in that order.
     calc = TransitDepthCalculator(include_opacities=["CH4", "H2O", "CO2"], downsample=2)
 
   This loads only the CH4, H2O, and CO2 opacities, and downsamples them by a factor of 2 (to a resolution of 10k, if you started with the default R=20k opacities).
+  The retrievals (run_emcee, run_dynesty and run_multinest) take the same
+  include_opacities and downsample arguments.
   
   In some cases, dynesty becomes extremely inefficient with the default
   sampling method.  In those cases, pass sample="rwalk" to run_dynesty, which

@@ -73,8 +73,8 @@ To retrieve atmospheric parameters, look at retrieve_dynesty.py, retrieve_multin
   fit_info.add_uniform_fit_param("log_cloudtop_P", -0.99, 5)
   fit_info.add_uniform_fit_param("error_multiple", 0.5, 5)
   
-  # Run nested sampling. You can replace run_dynesty with run_pymultinest,
-  # which is sometimes much faster and more robust
+  # Run nested sampling. You can replace run_dynesty with run_multinest,
+  # which is sometimes much faster and more robust, or with run_nautilus
   result = retriever.run_dynesty(
 	 bins, depths, errors, #transit bins, depths, errors
          None, None, None, #eclipse bins, depths, errors
@@ -133,6 +133,23 @@ the VMRs sum to 1 or more, or where that weight would be negative, are
 rejected.  add_gases_clr takes the same option.  The forward models accept the
 mean molecular weight directly, as compute_depths(..., mmw=2.3).
 
+Transit depths from different instruments can be offset from each other.  Up
+to five offsets can be fitted: offset_transit shifts
+depths[offset_start:offset_end] (all depths, unless the range is set), and
+offset2_transit to offset5_transit shift depths[offsetN_start:offsetN_end].
+Offsets are in units of transit depth (not ppm), and are added to the model
+before it is compared to the data::
+
+  fit_info = CombinedRetriever.get_default_fit_info(...,
+      offset_transit=0, offset_start=37, offset_end=70,
+      offset2_transit=0, offset2_start=70, offset2_end=100)
+  fit_info.add_gaussian_fit_param("offset_transit", 100e-6)
+  fit_info.add_gaussian_fit_param("offset2_transit", 100e-6)
+
+The ranges of offsets 2-5 are empty unless set, and fitting an offset whose
+range selects no transit depths raises an error.  Eclipse depths have a single
+offset, offset_eclipse, applied to depths[offset_start:offset_end].
+
 Once you get the `result` object, you should store the object, in addition
 to plotting the posterior distribution and the best fit::
 
@@ -143,6 +160,17 @@ to plotting the posterior distribution and the best fit::
   plotter = Plotter()
   plotter.plot_retrieval_transit_spectrum(result, prefix="best_fit")
   plotter.plot_retrieval_corner(result, filename="dynesty_corner.png")
+
+run_nautilus uses `nautilus <https://nautilus-sampler.readthedocs.io>`_
+(Lange 2023), which trains neural networks to propose new points and usually
+needs several times fewer likelihood evaluations than the other nested
+samplers.  Install it with ``pip install nautilus-sampler``.  Its main options
+are nlive (2000 by default), n_eff (the effective posterior sample size at
+which it stops), filepath, an HDF5 file that lets an interrupted run
+resume, and discard_exploration.  By default, the points drawn while
+nautilus builds its bounds are discarded, which nautilus requires for a fully
+unbiased posterior and evidence; discard_exploration=False keeps them, which
+needs fewer likelihood evaluations.
 
 If you prefer using MCMC instead of Nested Sampling in your retrieval, you can
 use the run_emcee method instead of the run_dynesty method. Do note that

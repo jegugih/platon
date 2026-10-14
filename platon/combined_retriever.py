@@ -24,6 +24,11 @@ from .TP_profile import Profile
 from .retrieval_result import RetrievalResult
 from .custom_dynesty_result import CustomDynestyResult
 
+# Transit depths can have up to this many instrumental offsets: offset_transit
+# applies to depths[offset_start:offset_end], and offsetN_transit (N = 2, 3...)
+# to depths[offsetN_start:offsetN_end]
+NUM_TRANSIT_OFFSETS = 5
+
 class CombinedRetriever:
     def pretty_print(self, fit_info):
         if not hasattr(self, "last_lnprob"):
@@ -55,7 +60,7 @@ class CombinedRetriever:
             elif abs(value) < 1e4: format_str = "{:.2f}"
             else: format_str = "{:.2e}"
 
-            if name in ["offset_transit", "offset_eclipse"]:
+            if name.startswith("offset") and name.endswith(("_transit", "_eclipse")):
                 unit = "ppm"
                 value *= 1e6
             
@@ -120,6 +125,34 @@ class CombinedRetriever:
                isinstance(fit_info.all_params[name], _UniformParam) and \
                fit_info.all_params[name].low_lim < 0:
                 raise ValueError("The prior on {} must not include negative values".format(name))
+
+    @staticmethod
+    def _calculator_kwargs(include_condensation, rad_method, include_opacities, downsample):
+        '''Options for the transit and eclipse calculators of a retrieval'''
+        kwargs = dict(include_condensation=include_condensation, method=rad_method,
+                      downsample=downsample)
+        # None keeps the calculators' default list of species
+        if include_opacities is not None:
+            kwargs["include_opacities"] = include_opacities
+        return kwargs
+
+    @staticmethod
+    def _transit_offset_names(n):
+        '''Names of the value, start and end parameters of transit offset n'''
+        prefix = "offset" if n == 1 else "offset{}".format(n)
+        return prefix + "_transit", prefix + "_start", prefix + "_end"
+
+    @staticmethod
+    def _validate_transit_offsets(fit_info, transit_depths):
+        '''Each fitted transit offset must apply to some transit depths'''
+        num_depths = 0 if transit_depths is None else len(transit_depths)
+        for n in range(1, NUM_TRANSIT_OFFSETS + 1):
+            name, start, end = CombinedRetriever._transit_offset_names(n)
+            if name not in fit_info.fit_param_names:
+                continue
+            if len(range(num_depths)[fit_info._get(start) : fit_info._get(end)]) == 0:
+                raise ValueError("{} is fitted, but {}={} and {}={} select none of the {} transit depths".format(
+                    name, start, fit_info._get(start), end, fit_info._get(end), num_depths))
 
     @staticmethod
     def get_remainder(gases, vmrs, mmw, mass_data):
@@ -244,7 +277,10 @@ class CombinedRetriever:
                     part_size=part_size, ri=ri, P_quench=P_quench, full_output=ret_best_fit, zero_opacities=zero_opacities,
                     mmw=mmw)
 
-                calculated_transit_depths[params_dict["offset_start"] : params_dict["offset_end"]] += params_dict["offset_transit"]
+                for n in range(1, NUM_TRANSIT_OFFSETS + 1):
+                    name, start, end = self._transit_offset_names(n)
+                    if name in params_dict:
+                        calculated_transit_depths[params_dict[start] : params_dict[end]] += params_dict[name]
                 residuals = calculated_transit_depths - measured_transit_depths
                 scaled_errors = error_multiple * measured_transit_errors
                 ln_likelihood = np.append(ln_likelihood, -0.5 * (residuals**2 / scaled_errors**2 + np.log(2 * np.pi * scaled_errors**2)))
@@ -313,7 +349,8 @@ class CombinedRetriever:
                   fit_info, nwalkers=50,
                   nsteps=1000, include_condensation=True,
                   rad_method="xsec",
-                  num_final_samples=100, zero_opacities=[]):
+                  num_final_samples=100, zero_opacities=[],
+                  include_opacities=None, downsample=1):
         '''Runs affine-invariant MCMC to retrieve atmospheric parameters.
 
         Parameters
@@ -349,6 +386,15 @@ class CombinedRetriever:
             "xsec" for opacity sampling, "ktables" for correlated k
         zero_opacities : list of strings
             List of molecules to zero opacities for
+        include_opacities : list of strings, optional
+            Molecules whose opacities are loaded; by default, those of
+            TransitDepthCalculator.  Molecules not in the list have no line
+            absorption, even if they are in the atmosphere.  Loading fewer
+            uses less memory and makes each model faster.
+        downsample : int, optional
+            Use every downsample-th point of the opacities' wavelength grid
+            (R~20,000 for "xsec"), which is faster and uses less memory but
+            samples the opacities more coarsely
 
         Returns
         -------
@@ -360,14 +406,15 @@ class CombinedRetriever:
         eclipse_calc = None
 
         self._validate_mmw_params(fit_info)
+        self._validate_transit_offsets(fit_info, transit_depths)
         # Both calculators are created before either is rebinned, so that
         # they share the full opacity data while loading
+        calc_kwargs = self._calculator_kwargs(
+            include_condensation, rad_method, include_opacities, downsample)
         if transit_bins is not None:
-            transit_calc = TransitDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            transit_calc = TransitDepthCalculator(**calc_kwargs)
         if eclipse_bins is not None:
-            eclipse_calc = EclipseDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            eclipse_calc = EclipseDepthCalculator(**calc_kwargs)
         if transit_bins is not None:
             transit_calc.change_wavelength_bins(transit_bins)
             self._validate_params(fit_info, transit_calc)
@@ -468,6 +515,7 @@ class CombinedRetriever:
                       include_condensation=True, rad_method="xsec",
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
+                      include_opacities=None, downsample=1,
                       **dynesty_kwargs):
         '''Runs nested sampling to retrieve atmospheric parameters.
 
@@ -502,6 +550,15 @@ class CombinedRetriever:
             Number of live points to use for nested sampling
         zero_opacities : list of strings                                                                                                                                                                   
             List of molecules to zero opacities for
+        include_opacities : list of strings, optional
+            Molecules whose opacities are loaded; by default, those of
+            TransitDepthCalculator.  Molecules not in the list have no line
+            absorption, even if they are in the atmosphere.  Loading fewer
+            uses less memory and makes each model faster.
+        downsample : int, optional
+            Use every downsample-th point of the opacities' wavelength grid
+            (R~20,000 for "xsec"), which is faster and uses less memory but
+            samples the opacities more coarsely
         **dynesty_kwargs : keyword arguments to pass to dynesty's NestedSampler
 
         Returns
@@ -512,14 +569,15 @@ class CombinedRetriever:
         transit_calc = None
         eclipse_calc = None
         self._validate_mmw_params(fit_info)
+        self._validate_transit_offsets(fit_info, transit_depths)
         # Both calculators are created before either is rebinned, so that
         # they share the full opacity data while loading
+        calc_kwargs = self._calculator_kwargs(
+            include_condensation, rad_method, include_opacities, downsample)
         if transit_bins is not None:
-            transit_calc = TransitDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            transit_calc = TransitDepthCalculator(**calc_kwargs)
         if eclipse_bins is not None:
-            eclipse_calc = EclipseDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            eclipse_calc = EclipseDepthCalculator(**calc_kwargs)
         if transit_bins is not None:
             transit_calc.change_wavelength_bins(transit_bins)
             self._validate_params(fit_info, transit_calc)
@@ -603,27 +661,191 @@ class CombinedRetriever:
         return retrieval_result
 
 
+    def run_nautilus(self, transit_bins, transit_depths, transit_errors,
+                     eclipse_bins, eclipse_depths, eclipse_errors,
+                     fit_info,
+                     include_condensation=True, rad_method="xsec",
+                     nlive=2000, n_eff=10000, maxcall=None,
+                     num_final_samples=100, zero_opacities=[],
+                     include_opacities=None, downsample=1,
+                     filepath=None, pool=None, verbose=True, seed=None,
+                     discard_exploration=True, **nautilus_kwargs):
+        '''Runs neural network-boosted importance nested sampling with
+        nautilus (Lange 2023, https://nautilus-sampler.readthedocs.io) to
+        retrieve atmospheric parameters.  It typically needs several times
+        fewer likelihood evaluations than dynesty or MultiNest.
+
+        Parameters
+        ----------
+        transit_bins, transit_depths, transit_errors, eclipse_bins,
+        eclipse_depths, eclipse_errors, fit_info, include_condensation,
+        rad_method, num_final_samples, zero_opacities, include_opacities,
+        downsample :
+            As for :func:`run_dynesty`
+        nlive : int, optional
+            Number of live points
+        n_eff : float, optional
+            Minimum effective posterior sample size before stopping
+        maxcall : int, optional
+            Maximum number of likelihood evaluations
+        filepath : str, optional
+            HDF5 file in which nautilus saves its state, so that an
+            interrupted run can be resumed by calling this again
+        pool : int or Pool, optional
+            Number of processes (or a pool) used to evaluate likelihoods.
+            On a GPU, one process usually suffices.
+        verbose : bool, optional
+            Whether nautilus prints its progress
+        seed : int, optional
+            Random seed of the sampler
+        discard_exploration : bool, optional
+            Whether to discard the points drawn while nautilus explores the
+            likelihood (building its bounds).  Discarding them is required
+            for a fully unbiased posterior and evidence, at the cost of more
+            likelihood evaluations to reach n_eff.  False uses every point.
+        **nautilus_kwargs :
+            Other keyword arguments for nautilus.Sampler
+
+        Returns
+        -------
+        result : RetrievalResult object
+            Has the weighted samples (samples, weights, logl, logp), the
+            equally weighted samples (equal_samples), logz and
+            effective_sample_size.
+        '''
+        import nautilus
+
+        self.params_to_lnlike = {}
+        transit_calc = None
+        eclipse_calc = None
+        self._validate_mmw_params(fit_info)
+        self._validate_transit_offsets(fit_info, transit_depths)
+        # Both calculators are created before either is rebinned, so that
+        # they share the full opacity data while loading
+        calc_kwargs = self._calculator_kwargs(
+            include_condensation, rad_method, include_opacities, downsample)
+        if transit_bins is not None:
+            transit_calc = TransitDepthCalculator(**calc_kwargs)
+        if eclipse_bins is not None:
+            eclipse_calc = EclipseDepthCalculator(**calc_kwargs)
+        if transit_bins is not None:
+            transit_calc.change_wavelength_bins(transit_bins)
+            self._validate_params(fit_info, transit_calc)
+        if eclipse_bins is not None:
+            eclipse_calc.change_wavelength_bins(eclipse_bins)
+
+        def transform_prior(cube):
+            new_cube = np.zeros(len(cube))
+            for i in range(len(cube)):
+                new_cube[i] = fit_info._from_unit_interval(i, cube[i])
+            return new_cube
+
+        def nautilus_ln_like(params):
+            lnlike_per_point = self._ln_like(params, transit_calc, eclipse_calc, fit_info, transit_depths, transit_errors,
+                                             eclipse_depths, eclipse_errors, zero_opacities=zero_opacities, lnlike_per_point=True)
+            if not np.isscalar(lnlike_per_point):
+                return lnlike_per_point.sum()
+            assert(lnlike_per_point == -np.inf)
+            return -np.inf
+
+        num_dim = fit_info._get_num_fit_params()
+        sampler = nautilus.Sampler(transform_prior, nautilus_ln_like, n_dim=num_dim, n_live=nlive,
+                                   pool=pool, seed=seed, filepath=filepath, **nautilus_kwargs)
+        sampler.run(n_eff=n_eff, n_like_max=np.inf if maxcall is None else maxcall,
+                    discard_exploration=discard_exploration, verbose=verbose)
+
+        samples, log_w, logl = sampler.posterior()
+        weights = np.exp(log_w - np.max(log_w))
+        weights /= np.sum(weights)
+        result = {"samples": samples, "weights": weights, "logl": logl,
+                  "logp": logl + np.array([fit_info._ln_prior(params) for params in samples]),
+                  "logz": sampler.log_z, "effective_sample_size": sampler.n_eff,
+                  "ncall": sampler.n_like}
+        best_params_arr = samples[np.argmax(result["logp"])]
+        # By default each point is drawn at most once, which gives far fewer
+        # equally weighted samples than the effective sample size when the
+        # weights are uneven; boost the draws to about that size
+        boost = max(1.0, sampler.n_eff * np.max(weights))
+        equal_samples = sampler.posterior(equal_weight=True, equal_weight_boost=boost)[0]
+        np.random.shuffle(equal_samples)
+        result["equal_samples"] = equal_samples
+
+        divisors, new_labels = self._get_divisors_labels(
+            np.median(equal_samples, axis=0),
+            fit_info.fit_param_names)
+
+        write_param_estimates_file(
+            equal_samples / divisors,
+            best_params_arr / divisors,
+            np.max(result["logp"]),
+            new_labels)
+
+        best_fit_transit_depths, best_fit_transit_info, best_fit_eclipse_depths, best_fit_eclipse_info = self._ln_like(
+            best_params_arr, transit_calc, eclipse_calc, fit_info,
+            transit_depths, transit_errors,
+            eclipse_depths, eclipse_errors, zero_opacities=zero_opacities, ret_best_fit=True)
+
+        retrieval_result = RetrievalResult(
+            result, "nautilus", best_params_arr,
+            transit_bins, transit_depths, transit_errors,
+            eclipse_bins, eclipse_depths, eclipse_errors,
+            best_fit_transit_depths, best_fit_transit_info,
+            best_fit_eclipse_depths, best_fit_eclipse_info,
+            fit_info, divisors, new_labels)
+
+        retrieval_result.random_transit_depths = []
+        retrieval_result.random_eclipse_depths = []
+        retrieval_result.random_TP_profiles = []
+        retrieval_result.pointwise_lnlikes = []
+        for params in equal_samples[:num_final_samples]:
+            _, transit_info, _, eclipse_info = self._ln_like(
+                params, transit_calc, eclipse_calc, fit_info,
+                transit_depths, transit_errors,
+                eclipse_depths, eclipse_errors, zero_opacities=zero_opacities, ret_best_fit=True)
+            if transit_depths is not None:
+                retrieval_result.random_transit_depths.append(transit_info["unbinned_depths"] * transit_info["unbinned_correction_factors"])
+            if eclipse_depths is not None:
+                retrieval_result.random_eclipse_depths.append(eclipse_info["unbinned_eclipse_depths"])
+                retrieval_result.random_TP_profiles.append(np.array([eclipse_info["P_profile"], eclipse_info["T_profile"]]))
+            # Likelihoods evaluated in other processes are not cached here
+            pointwise = self.params_to_lnlike.get(tuple(params))
+            if pointwise is None:
+                pointwise = self._ln_like(
+                    params, transit_calc, eclipse_calc, fit_info,
+                    transit_depths, transit_errors, eclipse_depths, eclipse_errors,
+                    zero_opacities=zero_opacities, lnlike_per_point=True)
+            retrieval_result.pointwise_lnlikes.append(pointwise)
+
+        #Calculate LOO-CV scores
+        retrieval_result.loo_total, retrieval_result.loos, retrieval_result.loo_ks = psisloo(np.array(retrieval_result.pointwise_lnlikes))
+        return retrieval_result
+
     def run_multinest(self, transit_bins, transit_depths, transit_errors,
                       eclipse_bins, eclipse_depths, eclipse_errors,
                       fit_info,
                       include_condensation=True, rad_method="xsec",
                       maxiter=None, maxcall=None, nlive=250,
                       num_final_samples=100, zero_opacities=[],
+                      include_opacities=None, downsample=1,
                       **dynesty_kwargs):
+        '''Runs nested sampling with MultiNest (through pymultinest) to
+        retrieve atmospheric parameters.  The parameters are as for
+        run_dynesty, except that dynesty_kwargs are ignored.'''
         import pymultinest
         
         self.params_to_lnlike = {}
         transit_calc = None
         eclipse_calc = None
         self._validate_mmw_params(fit_info)
+        self._validate_transit_offsets(fit_info, transit_depths)
         # Both calculators are created before either is rebinned, so that
         # they share the full opacity data while loading
+        calc_kwargs = self._calculator_kwargs(
+            include_condensation, rad_method, include_opacities, downsample)
         if transit_bins is not None:
-            transit_calc = TransitDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            transit_calc = TransitDepthCalculator(**calc_kwargs)
         if eclipse_bins is not None:
-            eclipse_calc = EclipseDepthCalculator(
-                include_condensation=include_condensation, method=rad_method)
+            eclipse_calc = EclipseDepthCalculator(**calc_kwargs)
         if transit_bins is not None:
             transit_calc.change_wavelength_bins(transit_bins)
             self._validate_params(fit_info, transit_calc)
@@ -720,6 +942,10 @@ class CombinedRetriever:
                              n=None, log_k=-np.inf,
                              log_P_quench=-99,
                              offset_transit=0, offset_eclipse=0, offset_start=0, offset_end=sys.maxsize,
+                             offset2_transit=0, offset2_start=0, offset2_end=0,
+                             offset3_transit=0, offset3_start=0, offset3_end=0,
+                             offset4_transit=0, offset4_start=0, offset4_end=0,
+                             offset5_transit=0, offset5_start=0, offset5_end=0,
                              fit_vmr=False, fit_clr=False,
                              mmw=None, inv_mmw=None,
                              profile_type = 'isothermal', **profile_kwargs):
@@ -742,6 +968,11 @@ class CombinedRetriever:
             A positive offset means the observed transit depths are decreased before comparing to the model.
         offset_eclipse : float
             Same as above, but for eclipse depths.
+        offset2_transit, offset3_transit, offset4_transit, offset5_transit : float
+            Up to four more offsets of transit data (e.g. for other
+            instruments), each applied to obs[offsetN_start:offsetN_end] like
+            offset_transit.  Their ranges are empty unless set, and offsets
+            add where ranges overlap.  Eclipse depths only have offset_eclipse.
         mmw : float
             Mean molecular weight of the atmosphere, in amu.  If not None, it
             is used instead of the mean molecular weight implied by the
